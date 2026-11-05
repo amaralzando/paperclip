@@ -242,6 +242,19 @@ and the matching server-issued scheduling receipt on the source run. Company,
 task, agent, requester, schedule identity, and current delivery authorization
 remain enforced. Provider-supplied source IDs do not establish that lineage.
 
+An accepted ordinary task result (`done` or `needs_review`) commits its status
+decision independently of its final reply comment. If the reply is not yet
+published when background presentation recovery is due, a refused or failed
+attempt is recorded on the run as `resultJson.responsePublication` and retried
+with bounded backoff (six attempts, at most five minutes apart). The reply stays
+idempotent through the presentation decision's `commentId`, so a retry never
+posts twice. Exhausted retries record the named failure
+`native_response_publication_failed` with the run's agent as owner, a
+`run.response_publication.failed` run event, and an
+`issue.response_publication_failed` task activity, so the task cannot close
+silently without its answer. Agent Chat conversations keep their completion
+outbox as the bounded owner.
+
 An accepted same-agent continuation retains the same presentation contract.
 Its successor inherits conversation provenance only through the applied status
 decision, delivered continuation effect, and admitted wake that name the same
@@ -406,6 +419,13 @@ provider has stopped or change native cancellation acknowledgement.
 
 A known execution hold is a waiting condition, not a new execution attempt. Every issue wake must read the current effective reconciliation hold under the issue admission lock before creating a run. Resolved recovery bookkeeping can still carry a no-replay hold; only clearing the effective hold makes admission eligible again. The final dispatch gate remains required for changes after admission.
 
+Repeated legacy recovery scans retain one settled no-replay decision for the same
+company, task, cause, fingerprint, and source run. A different source run can
+still require its own decision. When the board reconciles that exact execution,
+historical duplicate holds share the verified decision and one continuation
+delivery owner. Separate workspace or system recovery obligations and records
+with an existing reconciliation remain unchanged.
+
 A queued legacy run denied by that final gate is still a wait. Its matching
 dispatch-gate receipt, task identity, and absence of runtime selection, execution
 ownership, environment leases, coordinator, or execution events prove that it
@@ -458,6 +478,11 @@ Workspace contention (`workspace_busy`) displays **Waiting for workspace** and
 continues automatically when the workspace is available. Internal scheduling
 attempts remain in the run log without conversation cancellation markers,
 cancellation toasts, or manual Retry controls. Users can keep sending instructions.
+A waiting run stays as one parked retry while the run that holds the workspace is
+live. It does not create another run record per check. The holder ending makes
+its waiters due immediately, and waiters for one workspace are admitted one at a
+time in arrival order. A parked retry is re-checked at most every five minutes as
+a fallback, and stops waiting on a holder that is silent past the one-hour cutoff.
 
 A remote task workspace stays held by its last writer run until that writer's
 save and sandbox release settle. This hold continues after the writer run ends.
@@ -797,6 +822,8 @@ Normal issue-thread feedback can still wake the current assignee according to th
 
 Restart recovery revisits accepted deferred messages through the latest issue run, including historical mention queues for another agent. Ordinary messages for a former owner retain their assignment handoff. Native sources require their matching committed finalization, settled environment leases, and released finalizer and copyback ownership before recovery clears old issue claims. A successful retained warm release can satisfy the lease check. Released local bookkeeping without a provider allocation and a matching SSH bookkeeping release need no provider cleanup receipt. Plugin releases record their successful acknowledgement. Pending or failed cleanup and durable owners still hold work. A successful fenced cleanup completion clears its in-flight claim in the same database write, so a restart before retry bookkeeping cannot strand saved input. The normal release checks preserve cleanup holds, pauses, and operator Stops. Recovery checks for a competing turn under the issue lock before it promotes saved input.
 
+A user can send messages after a run's final turn took its input but before the run settles. A native run can finish its result and status decision before its environment cleanup completes. The messages remain saved while that cleanup holds the source. Releasing or retaining the run's environment lease, or releasing its workspace finalization owner, reconsiders the saved messages through this recovery path. They are delivered once. A task that finalization marked `done` is reopened for them. The release and admission gates above still apply.
+
 Repeated eligibility notifications must not move an unchecked, ready deferred receipt behind receipts already reconsidered. Paginated reconstruction preserves pending ready receipts' dispatch priority while refreshing their current state. Receipts whose wait deadline has passed join the ready queue on reconstruction. Future wait grace periods, claimed-work deadlines, infrastructure retry backoffs, and current admission checks remain effective.
 
 A paused recipient does not fail an accepted deferred request. Release and periodic recovery preserve its pending receipt and may process an eligible request behind it. Resuming the agent allows normal admission to reconsider the saved input. Missing, foreign, terminated, and unapproved recipients retain their rejection rules. Explicit task holds and operator Stops still prevent unauthorized execution. This does not replay historical failed requests.
@@ -874,6 +901,12 @@ Warm sandbox reuse must match the current host Git tip and branch as well as the
 file snapshot and saved stamp, including managed nested repositories. A history
 or branch mismatch restages the host before the next run begins.
 
+Portable workspace archives exclude Unix domain socket endpoints and record their
+paths in the exclusion manifest. Capture leaves the source endpoints in place;
+restore does not recreate runtime IPC. Named pipes and device entries remain
+unsupported, while regular files, directories and confined symlinks retain their
+existing validation.
+
 Disk-backed native sandbox workspace snapshots run in at most two worker threads per
 controller process. Each capture retains the same file hashes, modes, symlinks,
 exclusions and ignored-path manifest as an inline capture. A worker seals its
@@ -946,6 +979,14 @@ workspace finalization, and environment cleanup to settle. Model incompatibility
 usage-limit exhaustion, unknown failures, and unbound diagnostic text do not
 qualify as capacity failures.
 
+A definite `session.open` rejection whose runner classification says the
+provider cannot run the selected model (`requested_model_unsupported`,
+`grok_model_mismatch`) is a model rejection, not a startup interruption. It
+stops on its first attempt as `native_provider_model_rejected`, with no
+same-run bootstrap retry, and leaves an active board recovery action that asks
+for a supported model. Other `session.open` rejections keep the bounded
+startup retry. An indeterminate `session.open` outcome stays unclassified.
+
 ### Workspace scan failures before provider startup
 
 Workspace source preparation keeps its dedicated advisory-lock connection active
@@ -989,6 +1030,29 @@ This grants no provider-stop evidence: published or saved work, retained executi
 identity, unknown failures, active leases, and incomplete cleanup still require
 their normal reconciliation and termination proof. Unknown historical setup errors remain
 outside this policy, and generic recovery cannot renew its exhausted budget.
+
+A preserved reusable sandbox that the provider refuses to resume before provider
+dispatch uses the same bounded bootstrap budget (`reusable_sandbox_resume_failed`).
+A common cause is a follow-up that arrives while the provider is auto-stopping an
+idle sandbox. The retry inherits the source wake, so a reply is delivered once,
+and it resumes the same recorded lease. A refusal is not proof that the sandbox is
+lost, so the retry never destroys it or creates a replacement. Only an explicit
+provider not-found or a workspace identity mismatch with a verified backup permits
+replacement. The run records the refusal by closed labels only (cause label, HTTP
+status, errno-style code), never by provider text. On exhaustion, the task gets a
+specific recovery notice, and generic recovery does not grant another budget.
+
+The provider's own idle auto-stop must not coincide with the warm runner idle
+window. The host forwards the run's effective warm idle window (environment
+`runnerIdleTimeoutMs`, else the agent's `idleTimeoutMs`) to the sandbox provider
+worker as `warmRunnerIdleTimeoutMs`, on acquisition and on recovery resume. It is
+not part of lease identity or metadata. Daytona derives its effective
+`autoStopInterval` for a warm reusable sandbox as at least the warm window plus
+5 minutes, applies it at creation, and raises an older sandbox's shorter interval
+on resume (a bounded, best-effort update). Its cached-handle freshness keeps using
+the configured interval until the provider confirms the new one. An explicit `0`
+(auto-stop disabled), a longer configured interval, per-turn, and non-reusable
+sandboxes are unchanged, and idle sandboxes still auto-stop.
 
 When an admitted continuation reuses a sandbox after verified cleanup, an
 unpublished preparation uses a directory bound to its writer epoch and lease.
@@ -1692,6 +1756,12 @@ future execution until Resume, and missing stop proof still blocks continuation.
 
 ### Late provider usage
 
+Each run measures its usage from the total the previous run accounted for, whether
+it continues in the same process or resumes from a saved session in a new one.
+Usage above that total was not charged, so it stays in the new run's delta. A run
+that reports nothing keeps the accounted total for the next run, and a recovery of
+the same run keeps its starting point.
+
 A provider can report more usage after its run's charge was posted. That usage
 already happened, so it never fails a run or blocks a session. Codex usage totals
 are cumulative, so the Runner reports the exact increment above the known total and
@@ -1707,6 +1777,13 @@ an operator to review. It does not change the charge or stop the session. A loca
 session has no durable path for this, so its late usage stays with the run that is
 active when it arrives, or the next run. The total stays exact, but the attribution
 can be off by those tokens.
+
+Every remote Runner transport, including one on a plugin-owned VM, delivers usage to
+Core as events commit. Reports still in the Runner's outbox when a run finishes
+settle on that run when the next run drains them, even if it has no receipts yet.
+Codex reports the whole run's delta, so one such report can settle a finished run
+whose terminal event was already acknowledged. Other providers report per turn and
+still need their terminal event.
 
 ### Session settlement after a run
 
@@ -2028,7 +2105,7 @@ results, intentional stops, and historical unmarked failures keep their existing
 terminal behavior. This continuation uses the already charged restart attempt and
 does not reset the provider-attempt budget.
 
-Provider execution and control-plane finalization have different clocks. A healthy provider can think or execute a long tool without output. Once execution settles, recovery and finalization control steps have a 60-second deadline, checked on startup and every 15 seconds. With a healthy database and scheduler, an abandoned transition must be repaired or surfaced within 90 seconds. Terminal persistence must not wait on provider cleanup or publication; a late finalizer cannot change a reassigned or closed task or release another run's locks. Historical ambiguous runs are never automatically replayed after an upgrade.
+Provider execution and control-plane finalization have different clocks. A healthy provider can think or execute a long tool without output. Once execution settles, recovery and finalization control steps have a 60-second deadline, checked on startup and every 15 seconds. With a healthy database and scheduler, an abandoned transition must be repaired or surfaced within 90 seconds. Terminal persistence must not wait on provider cleanup or publication; a late finalizer cannot change a reassigned or closed task or release another run's locks. In particular, a done report from a run whose task now belongs to another agent, a user or nobody is kept as an accepted result but records `completion_owner_superseded` and preserves the task status for the current owner. Historical ambiguous runs are never automatically replayed after an upgrade.
 
 When that deadline fails a native run with a prepared workspace, the same
 transaction records the exact source's file-preservation obligation. Existing
@@ -2036,6 +2113,21 @@ stop-and-retain recovery contains the provider and saves the files before
 ordinary Retry can continue. Finalized workspaces, mismatched sources and
 accepted results keep their existing settlement paths. Reassignment does not
 discard the stopped run's files or grant authority over the new assignee.
+
+When the task was reassigned, that file-preservation hold binds the new owner
+only until automatic recovery records a completed receipt for that hold. Every
+saved operation in the receipt must be a copyback into the task workspace. The
+receipt is durable, so later reuse of the workspace by the new owner cannot
+apply the hold again. A new owner's turn is a fresh assignment, not a replay of
+the stopped run. After the receipt, admission, the final dispatch gate and
+stranded-work recovery no longer apply the hold to that owner. Wakes that the
+gate cancelled during the copy-back therefore get one bounded continuation.
+
+The hold row and its no-replay evidence stay unchanged. The hold still applies
+when the task returns to the stopped run's agent. It also applies when that agent
+is the current review participant. Before the receipt, the hold prevents a second
+executor on the workspace. A snapshot-only save does not release the hold,
+because the task workspace does not contain the saved files.
 
 The deadline is a backstop, not the normal failure path. When native task
 preparation fails after a fresh controller claim and before any provider turn,
@@ -2098,6 +2190,16 @@ hold. After preservation, the accepted continuation selects the bound saved
 workspace through its verified repair receipt instead of discarding its files.
 
 Every continuation carries the triggering request, ordered user direction, interaction outcomes, completed work, and explicit history coverage. A delivered message remains part of the task's request after its connection or approval resolves. The original title is background; a completed Notion read does not satisfy a later Gmail request. Author and source-trust boundaries survive rendering into both native and legacy prompts. Missing required history must be fetched before dispatch rather than described as complete.
+
+Continuation projects large successful document, comment, and task-write responses
+as saved-record references. It retains each completed action's run and receipt IDs,
+HTTP outcome, record identity, revision/status metadata, and a digest of the omitted
+response data. The full response stays in the original run receipt. This avoids
+repeating saved document bodies in every new runner command. User messages,
+verified answers, unknown operations, and failed responses keep their existing
+representation. A reference is evidence of completed work, not permission to
+repeat the action; read the saved record or original receipt when its contents
+are needed.
 
 ### Remote runner process evidence
 
@@ -2222,6 +2324,11 @@ not grant board Stop or continuation authority, change the cancelled result,
 or prove physical termination. Normal recovery stops and retains the same
 allocation, saves its files, and obtains a fresh stop receipt before cleanup
 can apply the original destroy disposition. It starts no provider turn.
+An audited acknowledgement with `dispatched: false` also admits this preservation
+when Stop found no live controller. The worker retains the exact prepared source
+and obtains independent provider-stop evidence through normal recovery. It does
+not convert the no-op acknowledgement into a dispatched interrupt receipt or
+permission to continue the cancelled turn.
 A reusable lease can also owe native copyback: the export-repair action must
 select its exact immutable descriptor and the finalizer's accepted successful
 result under the same company, task, run and completion contract. Lease reuse

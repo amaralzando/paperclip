@@ -1,6 +1,7 @@
 import { preserveAcceptedRunUsageProjectionSql } from "../usage-receipts.js";
 import { providerFailureFromError } from "../../vendor/paperclip-runner/index.js";
 import { nativeTaskSessionPublicationHandled } from "../native-runtime/native-task-session-publication.js";
+import { settledResponsePublicationSql } from "../native-runtime/native-response-publication-receipt.js";
 import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { measureRunPhase } from "../execution-preparation-timing.js";
 import { PROJECT_ACCESS_DENIED, ProjectAccessDeniedError } from "../project-access-denial.js";
@@ -9,6 +10,7 @@ import { NON_RETRYABLE_PREFLIGHT_FAILURE_CODES, isHeartbeatRunTerminalStatus } f
 import { ChatControlRecoveryUnresolvedError } from "./queue.js";
 import { readTransientRecoveryContractFromRun, readHeartbeatRunErrorFamily, isTransientWorkspacePreparationCode } from "./retries.js";
 import { RemoteWorkspacePreparationTimeoutError } from "../remote-workspace-transport.js";
+import { findReusableSandboxResumeError } from "../reusable-sandbox-resume-error.js";
 import { type RunSessionOutcome, resolveNextSessionState, normalizeUsageTotals, resolveCacheAdjustedCostUsd, resolveLedgerBiller, resolveLedgerCostStatus, normalizeLedgerBillingType } from "./run-state.js";
 import { readGitConnectionFailure } from "../git-connection-failure.js";
 import { CONFIGURATION_INCOMPLETE_FAILURE_CODE, ConfigurationIncompleteFailure } from "./run-preparation.js";
@@ -358,7 +360,8 @@ export async function recordRunPresentationDecision(db: Db, input: {
   await db.transaction(async tx => {
     await notifyChatRunMilestones(tx, { companyId: input.companyId, runId: input.runId, issueId: input.issueId });
     await tx.update(heartbeatRuns).set({
-      resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({ presentationDecision: input.decision })}::jsonb`,
+      resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({ presentationDecision: input.decision })}::jsonb
+        || ${typeof input.decision.commentId === "string" ? settledResponsePublicationSql() : sql`'{}'::jsonb`}`,
       updatedAt: new Date(),
     }).where(eq(heartbeatRuns.id, input.runId));
   });
@@ -1355,9 +1358,15 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     const remoteWorkspacePreparationTimeout = !providerDispatchStarted && run.runtimeMode === "legacy"
       && run.nativeSessionId === null && run.runnerInstanceId === null && outerErr instanceof RemoteWorkspacePreparationTimeoutError
       ? outerErr : null;
+    // A preserved sandbox that could not be resumed before provider dispatch
+    // is retried with the same bounded bootstrap budget. The retry resumes the
+    // same recorded lease; it never creates a replacement or a second executor.
+    const reusableSandboxResumeFailure = !providerDispatchStarted && run.runtimeMode === "legacy"
+      && run.nativeSessionId === null && run.runnerInstanceId === null ? findReusableSandboxResumeError(outerErr) : null;
     const setupFailureErrorCode =
       (controllerLeaseLost ? CONTROLLER_LEASE_LOST_FAILURE_CODE : null) ??
       remoteWorkspacePreparationTimeout?.code ??
+      reusableSandboxResumeFailure?.code ??
       workspaceGitScanFailure?.code ??
       workspaceValidationSetupFailure?.code ??
       configurationIncompleteSetupFailure?.code ??
