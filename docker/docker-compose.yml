@@ -32,6 +32,9 @@ services:
     pids_limit: 2048
     # Includes the shared 30s adapter-settlement window and final cleanup.
     stop_grace_period: 90s
+    # Keep Hermes HTTPS traffic on the private Coolify proxy network.
+    extra_hosts:
+      - "paperclip.gasatec.com.br:10.0.23.2"
     ports:
       - "3100:3100"
     environment:
